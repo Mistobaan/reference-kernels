@@ -1,0 +1,4 @@
+interface:
+  display_name: "Arch B200"
+  short_description: "Blackwell B200 roofline and kernel tuning skill"
+  default_prompt: "Use $arch-b200 to reason about Blackwell B200 rooflines and kernel design."
