@@ -3,24 +3,28 @@ from task import input_t, output_t
 import torch
 import helion
 import helion.language as hl
-from pathlib import Path
+
+
+FP8_MAX = 448.0
+FP8_MIN = -448.0
+FP8_EPS = 1e-10
 
 
 # Per-shape configs: map (num_tokens, hidden_dim, group_size) to optimized helion.Config objects.
 # Autotune locally for each shape, then paste the best config here.
 SHAPE_CONFIGS: dict[tuple, helion.Config] = {
     # Test shapes
-    (1, 256, 64): helion.Config(block_sizes=[1], num_warps=1, num_stages=1),  # TODO: use any config that passes correctness check
-    (4, 512, 128): helion.Config(block_sizes=[1], num_warps=1, num_stages=1),  # TODO: use any config that passes correctness check
-    (16, 1024, 64): helion.Config(block_sizes=[1], num_warps=1, num_stages=1),  # TODO: use any config that passes correctness check
-    (1, 4096, 128): helion.Config(block_sizes=[1], num_warps=1, num_stages=1),  # TODO: use any config that passes correctness check
-    (8, 4096, 128): helion.Config(block_sizes=[1], num_warps=1, num_stages=1),  # TODO: use any config that passes correctness check
+    (1, 256, 64): helion.Config(block_sizes=[4], num_warps=1, num_stages=1),
+    (4, 512, 128): helion.Config(block_sizes=[8], num_warps=1, num_stages=1),
+    (16, 1024, 64): helion.Config(block_sizes=[32], num_warps=2, num_stages=2),
+    (1, 4096, 128): helion.Config(block_sizes=[16], num_warps=2, num_stages=2),
+    (8, 4096, 128): helion.Config(block_sizes=[64], num_warps=4, num_stages=2),
     # Benchmark shapes
     # (1, 4096, 128) already covered above
-    (16, 4096, 128): helion.Config(block_sizes=[1], num_warps=1, num_stages=1),  # TODO: replace with your autotuned config
-    (256, 4096, 128): helion.Config(block_sizes=[1], num_warps=1, num_stages=1),  # TODO: replace with your autotuned config
-    (256, 8192, 128): helion.Config(block_sizes=[1], num_warps=1, num_stages=1),  # TODO: replace with your autotuned config
-    (4096, 7168, 128): helion.Config(block_sizes=[1], num_warps=1, num_stages=1),  # TODO: replace with your autotuned config
+    (16, 4096, 128): helion.Config(block_sizes=[64], num_warps=4, num_stages=2),
+    (256, 4096, 128): helion.Config(block_sizes=[64], num_warps=4, num_stages=2),
+    (256, 8192, 128): helion.Config(block_sizes=[64], num_warps=4, num_stages=2),
+    (4096, 7168, 128): helion.Config(block_sizes=[64], num_warps=4, num_stages=2),
 }
 
 
@@ -34,34 +38,20 @@ def _make_kernel(config: helion.Config):
     @helion.kernel(static_shapes=True, config=config)
     def kernel(
         data: torch.Tensor,       # [N, G] input rows
+        qout: torch.Tensor,       # [N, G] quantized output
         scales_out: torch.Tensor,  # [N] output normalization factors
-    ) -> torch.Tensor:
+    ) -> None:
         nrows = data.size(0)
-        ncols = hl.specialize(data.size(1))
-        MAX_VAL = 448.0
+        block_r = hl.register_block_size(1, nrows)
 
-        qout = torch.empty(nrows, ncols, dtype=torch.float32, device=data.device)
-
-        for rr in hl.tile(nrows):
+        for rr in hl.tile(nrows, block_size=block_r):
             row = data[rr, :].to(torch.float32)
+            amax = torch.amax(torch.abs(row), dim=1)
+            amax = torch.clamp(amax, min=FP8_EPS)
+            inv_scale = FP8_MAX / amax
 
-            abs1 = torch.abs(row)
-            amax1 = torch.amax(abs1, -1)
-            abs2 = torch.abs(row)
-            amax2 = torch.amax(abs2, -1)
-            abs3 = torch.abs(row)
-            amax3 = torch.amax(abs3, -1)
-            amax = (amax1 + amax2 + amax3) / 3.0
-            amax = torch.clamp(amax, min=1e-10)
-            scale = amax / MAX_VAL
-
-            q1 = row / scale[:, None]
-            q2 = row / scale[:, None]
-            q3 = row / scale[:, None]
-            qout[rr, :] = (q1 + q2 + q3) / 3.0
-            scales_out[rr] = scale
-
-        return qout
+            qout[rr, :] = torch.clamp(row * inv_scale[:, None], FP8_MIN, FP8_MAX)
+            scales_out[rr] = amax / FP8_MAX
 
     return kernel
 
@@ -79,10 +69,8 @@ def custom_kernel(data: input_t) -> output_t:
     kernel = _KERNELS[(T, H, gsz)]
 
     flat_in = x.reshape(N, gsz)
+    flat_q = x_q.reshape(N, gsz)
     flat_s = x_s.reshape(N)
 
-    flat_q = kernel(flat_in, flat_s)
-
-    x_q[...] = flat_q.reshape(T, H)
-    x_s[...] = flat_s.reshape(T, G)
+    kernel(flat_in, flat_q, flat_s)
     return x_q, x_s
