@@ -440,28 +440,51 @@ def run_profiling(logger: PopcornOutput, tests: list[TestCase]):
     return 0
 
 
+def arithmetic_mean(values: list[float]) -> float:
+    if not values:
+        raise ValueError("cannot compute arithmetic mean of an empty list")
+    return sum(values) / len(values)
+
+
+def humanize_duration_ms(duration_ms: float) -> str:
+    abs_ms = abs(duration_ms)
+    if abs_ms >= 1000.0:
+        value, unit = duration_ms / 1000.0, "s"
+    elif abs_ms >= 1.0:
+        value, unit = duration_ms, "ms"
+    elif abs_ms >= 0.001:
+        value, unit = duration_ms * 1000.0, "us"
+    else:
+        value, unit = duration_ms * 1_000_000.0, "ns"
+    return f"{value:.4f} {unit}"
+
+
 def run_local():
     """
     Local eval mode: reads task.yml from a problem directory, runs correctness tests
     and benchmarks, prints results to stdout. No Popcorn infrastructure needed.
 
     Usage: python eval.py <mode> <problem_dir>
-      mode: test, benchmark, or both
+      mode: test, benchmark, both, profile, or leaderbord
       problem_dir: path to the problem directory containing task.yml
     """
     import yaml
 
     if len(sys.argv) < 3:
         print("Usage: python eval.py <mode> <problem_dir>", file=sys.stderr)
-        print("  mode: test, benchmark, or both", file=sys.stderr)
+        print("  mode: test, benchmark, both, profile, or leaderbord", file=sys.stderr)
         print("  problem_dir: path to problem directory containing task.yml", file=sys.stderr)
         return 1
 
     mode = sys.argv[1]
     problem_dir = Path(sys.argv[2])
 
-    if mode not in ("test", "benchmark", "both"):
-        print(f"Unknown mode '{mode}'. Use 'test', 'benchmark', or 'both'.", file=sys.stderr)
+    local_modes = ("test", "benchmark", "both", "profile", "leaderboard", "leaderbord")
+    if mode not in local_modes:
+        print(
+            f"Unknown mode '{mode}'. Use 'test', 'benchmark', 'both', 'profile', or 'leaderbord'.",
+            file=sys.stderr,
+        )
         return 1
 
     problem_dir = problem_dir.resolve()
@@ -500,24 +523,38 @@ def run_local():
             exit_code = 1
 
     # --- Benchmarks ---
-    if mode in ("benchmark", "both"):
+    if mode in ("benchmark", "both", "leaderboard", "leaderbord"):
         benchmarks = [TestCase(args=dict(t), spec=str(t)) for t in task.get("benchmarks", [])]
         print(f"\nRunning {len(benchmarks)} benchmarks...")
+
+        recheck = mode in ("leaderboard", "leaderbord")
+        rep_ms = 200 if recheck else 100
+        mean_ms_values: list[float] = []
 
         # Warmup
         _run_single_benchmark(benchmarks[0], False, 20)
 
         for idx, bench in enumerate(benchmarks):
-            result = _run_single_benchmark(bench, False, 100)
+            result = _run_single_benchmark(bench, recheck, rep_ms)
             if isinstance(result, Stats):
                 mean_ms = result.mean / 1e6  # Stats stores ns
                 min_ms = result.best / 1e6
                 max_ms = result.worst / 1e6
-                print(f"  Benchmark {idx}: {mean_ms:.4f} ms (min={min_ms:.4f}, max={max_ms:.4f})  {bench.spec}")
+                mean_ms_values.append(mean_ms)
+                print(
+                    "  Benchmark "
+                    f"{idx}: {mean_ms:.4f} ms ({humanize_duration_ms(mean_ms)}; "
+                    f"min={min_ms:.4f} ms / {humanize_duration_ms(min_ms)}, "
+                    f"max={max_ms:.4f} ms / {humanize_duration_ms(max_ms)})  {bench.spec}"
+                )
             else:
                 print(f"  Benchmark {idx}: FAIL (correctness)  {bench.spec}")
                 print(f"               {result}")
                 exit_code = 1
+
+        if mode in ("leaderboard", "leaderbord") and exit_code == 0:
+            avg_ms = arithmetic_mean(mean_ms_values)
+            print(f"Arithmetic mean: {avg_ms:.4f} ms ({humanize_duration_ms(avg_ms)})")
 
     return exit_code
 

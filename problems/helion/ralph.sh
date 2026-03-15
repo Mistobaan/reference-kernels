@@ -118,27 +118,33 @@ activate_virtualenv() {
   fi
   set -u
 
-  echo "USING PYTHON $(which python)"
-
   VENV_PATH="$resolved_path"
 }
 
 activate_virtualenv "$VENV_PATH"
 
-require_command() {
+resolve_command_path() {
   local cmd="$1"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
+  local resolved
+
+  if ! resolved="$(command -v "$cmd" 2>/dev/null)"; then
     echo "ERROR: Required command not found: $cmd" >&2
     exit 1
   fi
+
+  printf '%s\n' "$resolved"
+}
+
+require_command() {
+  resolve_command_path "$1" >/dev/null
 }
 
 require_command git
-require_command "$PYTHON_BIN"
-require_command "$CODEX_BIN"
+PYTHON_BIN="$(resolve_command_path "$PYTHON_BIN")"
+CODEX_BIN="$(resolve_command_path "$CODEX_BIN")"
 
 if [[ "$SKIP_SUBMIT" != "true" ]]; then
-  require_command "$POPCORN_BIN"
+  POPCORN_BIN="$(resolve_command_path "$POPCORN_BIN")"
 fi
 
 ARTIFACT_ROOT="$STATE_ROOT/runs/$RUN_TAG"
@@ -834,6 +840,7 @@ Active problem directory: \`$problem\`
 Leaderboard name: \`$leaderboard\`
 GPU target: \`B200_Nebius\`
 Required reasoning effort: highest available (\`xhigh\`)
+Python interpreter for all local commands: \`$PYTHON_BIN\`
 Current iteration: \`$iteration_number\`
 Current best baseline for this iteration: \`${current_baseline_human}\` (\`${current_baseline_ms} ms\`)
 Current total improvement vs the original baseline: \`${current_total_improvement_human}\`
@@ -861,6 +868,7 @@ Mandatory workflow:
 7. Re-validate locally as needed with:
    - \`$PYTHON_BIN eval.py test $problem\`
    - \`$PYTHON_BIN eval.py benchmark $problem\`
+   - Do not use bare \`python\` or \`python3\`; always use the exact interpreter path above.
 8. During experiments, rely on the forced local autotune environment to search for fresh configs even if \`submission.py\` already has hardcoded configs.
 9. When autotune reports a best config, patch \`$problem/submission.py\` so the relevant shape entry hardcodes that winning \`helion.Config(...)\`.
 10. If the winning config includes an \`advanced_controls_file\`, preserve it in the final hardcoded config.
@@ -1462,7 +1470,14 @@ PY
     HELION_FORCE_AUTOTUNE=1
     HELION_AUTOTUNE_EFFORT=full
     HELION_AUTOTUNE_PROGRESS_BAR=0
+    PATH="$PATH"
+    PYTHON_BIN="$PYTHON_BIN"
   )
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    codex_env+=(VIRTUAL_ENV="$VIRTUAL_ENV")
+  elif [[ -n "$VENV_PATH" ]]; then
+    codex_env+=(VIRTUAL_ENV="$VENV_PATH")
+  fi
   if [[ -n "$autotune_search_acf" ]]; then
     codex_env+=(HELION_AUTOTUNE_SEARCH_ACF="$autotune_search_acf")
   fi
@@ -1539,8 +1554,9 @@ PY
         -a never \
         exec \
         -C "$worktree_workspace" \
-        -s workspace-write \
+        -s danger-full-access \
         -c 'model_reasoning_effort="xhigh"' \
+        -c 'shell_environment_policy.inherit=all' \
         --output-schema "$schema_file" \
         --output-last-message "$response_file" \
         < "$prompt_file" 2>&1 | tee "$codex_log" | sed -u "s/^/[codex $problem iter $next_iteration] /"; then
@@ -1838,7 +1854,8 @@ main() {
   log "Artifacts: $ARTIFACT_ROOT"
   log "Worktrees: $WORKTREES_ROOT"
   log "Venv: ${VENV_PATH:-<none>}"
-  log "Python: $(command -v "$PYTHON_BIN")"
+  log "Python: $PYTHON_BIN"
+  log "Codex: $CODEX_BIN"
   log "Submit: $([[ "$SKIP_SUBMIT" == "true" ]] && echo no || echo yes)"
 
   process_problem "${problems[0]}"
