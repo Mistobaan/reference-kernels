@@ -8,23 +8,29 @@ import helion.language as hl
 FP8_MAX = 448.0
 FP8_MIN = -448.0
 FP8_EPS = 1e-10
+FP8_GROUP_QUANT_ACF_1 = "/opt/booster_pack/fp8_group_quant_1.acf"
 
 
 # Per-shape configs: map (num_tokens, hidden_dim, group_size) to optimized helion.Config objects.
 # Autotune locally for each shape, then paste the best config here.
 SHAPE_CONFIGS: dict[tuple, helion.Config] = {
     # Test shapes
-    (1, 256, 64): helion.Config(block_sizes=[4], num_warps=1, num_stages=1),
-    (4, 512, 128): helion.Config(block_sizes=[8], num_warps=1, num_stages=1),
-    (16, 1024, 64): helion.Config(block_sizes=[32], num_warps=2, num_stages=2),
-    (1, 4096, 128): helion.Config(block_sizes=[16], num_warps=2, num_stages=2),
-    (8, 4096, 128): helion.Config(block_sizes=[64], num_warps=4, num_stages=2),
+    (1, 256, 64): helion.Config(block_sizes=[4], num_warps=4, num_stages=1),
+    (4, 512, 128): helion.Config(block_sizes=[8], num_warps=2, num_stages=1),
+    (16, 1024, 64): helion.Config(block_sizes=[4], num_warps=1, num_stages=2),
+    (1, 4096, 128): helion.Config(block_sizes=[16], num_warps=4, num_stages=1),
+    (8, 4096, 128): helion.Config(block_sizes=[4], num_warps=2, num_stages=1),
     # Benchmark shapes
     # (1, 4096, 128) already covered above
-    (16, 4096, 128): helion.Config(block_sizes=[64], num_warps=4, num_stages=2),
-    (256, 4096, 128): helion.Config(block_sizes=[64], num_warps=4, num_stages=2),
-    (256, 8192, 128): helion.Config(block_sizes=[64], num_warps=4, num_stages=2),
-    (4096, 7168, 128): helion.Config(block_sizes=[64], num_warps=4, num_stages=2),
+    (16, 4096, 128): helion.Config(block_sizes=[4], num_warps=1, num_stages=2),
+    (256, 4096, 128): helion.Config(block_sizes=[8], num_warps=1, num_stages=2),
+    (256, 8192, 128): helion.Config(block_sizes=[8], num_warps=4, num_stages=1),
+    (4096, 7168, 128): helion.Config(
+        block_sizes=[8],
+        num_warps=4,
+        num_stages=1,
+        advanced_controls_file=FP8_GROUP_QUANT_ACF_1,
+    ),
 }
 
 
@@ -33,7 +39,6 @@ SHAPE_CONFIGS: dict[tuple, helion.Config] = {
 #     helion.Config(..., advanced_controls_file="/opt/booster_pack/fp8_group_quant_0.acf")
 
 
-# NOTE: This is an intentionally inefficient baseline implementation.
 def _make_kernel(config: helion.Config):
     @helion.kernel(static_shapes=True, config=config)
     def kernel(
